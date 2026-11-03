@@ -1,13 +1,17 @@
 # btc-movement — probabilistic Bitcoin model anchored on the fixed 5-minute reference price
 
 This model gives a full, continuously updated probability picture of where Bitcoin goes **relative to the
-fixed opening price of the current 5-minute candle**. It covers three horizons:
+fixed opening price of the current 5-minute candle**. It covers five horizons:
 
 | capability | question answered (at every second *t* of the window) |
 |---|---|
-| **30-second** | where will BTC be at *t+30s*, relative to the reference *K* and to now? |
+| **10-second** | where will BTC be at *t+10s*, relative to the reference *K* and to now? |
+| **15-second** | the same at *t+15s* |
+| **30-second** | the same at *t+30s* |
 | **1-minute** | the same at *t+60s* |
 | **5-minute** | where will BTC be at the 5-minute close, relative to *K*? |
+
+Each horizon has its own model stack and its own independent out-of-sample evaluation.
 
 For each horizon the engine outputs:
 
@@ -33,8 +37,8 @@ See **[REPORT.md](REPORT.md)** for the full out-of-sample evaluation.
   price is `S = close` of the last completed second. The remaining time is `τ = 300 − e`.
 * The 5-minute outcome is the window's closing price (the last trade of its last second). "Above" means
   `close ≥ K`, so ties count as up, as in the common "Up or Down" market convention.
-* The 30s/60s horizons predict `S(t+30)` and `S(t+60)`. "Above the reference" compares them with the same
-  fixed `K` of the window in which the decision is made.
+* The 10s/15s/30s/60s horizons predict `S(t+h)`. "Above the reference" compares them with the same fixed `K`
+  of the window in which the decision is made.
 
 Data: Binance **BTCUSDT spot 1-second klines** (price, volume, trade count, taker-buy volume) plus the
 **BTCUSDT USDT-margined perpetual** aggregated trades, rebuilt into 1-second bars. Both come from
@@ -48,7 +52,7 @@ Data: Binance **BTCUSDT spot 1-second klines** (price, volume, trade count, take
  1-second perp bars ─┼─► causal feature engine (≈125 features, all computed from bars < t)
  causal seasonality ─┘          │
                                 ▼
-            ┌──────────── per horizon h ∈ {30s, 60s, close} ────────────┐
+            ┌──────── per horizon h ∈ {10s, 15s, 30s, 60s, close} ───────┐
             │ A. volatility engine   LightGBM-gamma → σ_h  (5s-sampled RV) │
             │ B. drift engine        LightGBM → μ_h = E[R_h]/σ_h            │
             │ C. shape               Student-t (ν, scale) per τ-bucket      │

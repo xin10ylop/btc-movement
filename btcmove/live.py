@@ -100,7 +100,7 @@ class LivePredictor:
         self.log_every = log_every
         self.adapt = adapt
         self.pending = deque()          # (resolve_ts, H, ts, e, p_raw, K, p_naive)
-        self.resolved = {H: [] for H in ("30", "60", "T")}
+        self.resolved = {H: [] for H in ("10", "15", "30", "60", "T")}
         self._day = None
         # regime state (daily aggregates -> causal regime features), refreshed every UTC day
         self.reg_daily = None
@@ -213,10 +213,10 @@ class LivePredictor:
         if ts % self.log_every == 0 or out["elapsed_s"] == 0:
             lsd = np.sqrt(np.exp(float(row["lrv_300"].iloc[0])))
             d = np.log(out["price"] / out["reference_price"])
-            for H, name in (("30", "30s"), ("60", "60s"), ("T", "close")):
+            for H, name in (("10", "10s"), ("15", "15s"), ("30", "30s"), ("60", "60s"), ("T", "close")):
                 if name in out["horizons"]:
                     hs = out["horizons"][name]["horizon_s"]
-                    rt = ts + 29 if H == "30" else ts + 59 if H == "60" else out["window_start"] + 299
+                    rt = out["window_start"] + 299 if H == "T" else ts + int(hs) - 1
                     pn = float(_sp.ndtr(d / (lsd * np.sqrt(hs) + 1e-12)))
                     self.pending.append((rt, H, ts, out["elapsed_s"], out["horizons"][name]["p_above_reference_raw"],
                                          out["reference_price"], pn))
@@ -241,7 +241,7 @@ class RegimeMonitor:
 
     def __init__(self, mu0=0.03, k=0.015, h=4.0):
         self.mu0, self.k, self.h = mu0, k, h
-        self.hist = {H: deque() for H in ("30", "60", "T")}
+        self.hist = {H: deque() for H in ("10", "15", "30", "60", "T")}
         self.cusum = 0.0
         self.calib = {}
         self._win = None

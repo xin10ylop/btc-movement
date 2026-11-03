@@ -75,14 +75,15 @@ md = [f"# Regime-sliced results — `{a.split}` {splits[a.split]} — models `{a
       "model over the naive random walk, in millinats per decision, with a 95% day-block bootstrap CI.\n"]
 for fam, sl in slices.items():
     md.append(f"\n## {fam}\n")
-    md.append("| slice | windows | 5-min naive → full | Δ 5-min | 5-min AUC | 5-min ECE | 1-min Δ | 30s Δ | 30s dir. AUC |")
-    md.append("|---|---|---|---|---|---|---|---|---|")
+    extra = [h for h in ("15", "10") if h in P]
+    md.append("| slice | windows | 5-min naive → full | Δ 5-min | 5-min AUC | 5-min ECE | 1-min Δ | 30s Δ | " + "".join(f"{h}s Δ | " for h in extra) + "30s dir. AUC |")
+    md.append("|---|---|---|---|---|---|---|---|" + "---|" * len(extra) + "---|")
     for name, m0 in sl.items():
         r = {"windows": int(len(np.unique(df["ts"].to_numpy()[m0] // 300)))}
         if r["windows"] < 200:
             continue
         cells = []
-        for H in ("T", "60", "30"):
+        for H in [h for h in ("T", "60", "30", "15", "10") if h in P]:
             y, pf, ps, pn, within = P[H]
             m = m0 & within
             mean, lo, hi, _ = M.block_bootstrap_diff(M.ll_vec(y[m], pn[m]), M.ll_vec(y[m], pf[m]), day[m], a.boot)
@@ -94,7 +95,8 @@ for fam, sl in slices.items():
         out.setdefault(fam, {})[name] = r
         t, s1, s3 = r["T"], r["60"], r["30"]
         md.append(f"| {name} | {r['windows']:,} | {t['naive']:.4f} → {t['full']:.4f} | {t['dll']*1e3:+.1f} [{t['ci'][0]*1e3:+.1f}, {t['ci'][1]*1e3:+.1f}] | "
-                  f"{t['auc']:.3f} | {t['ece']:.4f} | {s1['dll']*1e3:+.1f} | {s3['dll']*1e3:+.1f} | {r['dir_auc_30']:.3f} |")
+                  f"{t['auc']:.3f} | {t['ece']:.4f} | {s1['dll']*1e3:+.1f} | {s3['dll']*1e3:+.1f} | "
+                  + "".join(f"{r[h]['dll']*1e3:+.1f} | " for h in extra) + f"{r['dir_auc_30']:.3f} |")
 tag = Path(a.models).name + "_" + a.split
 Path("artifacts/regime").mkdir(parents=True, exist_ok=True)
 json.dump(out, open(f"artifacts/regime/regime_eval_{tag}.json", "w"), indent=1, default=float)

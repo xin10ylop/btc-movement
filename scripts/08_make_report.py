@@ -20,7 +20,8 @@ reg = {k: load(f"regime/regime_eval_{k}.json") for k in (f"{MAIN}_test", "wf_A_t
 wfs = {k: load(f"wf_{k}/report_test.json") for k in ("A", "B")}
 abl = {h: load(f"ablation/ablation_{h}.json") for h in ("30", "60", "T")}
 seq = {h: load(f"ablation/sequence_cnn_{h}.json") for h in ("30", "T")}
-HN = {"T": "5-minute (to close)", "30": "30-second", "60": "1-minute"}
+HN = {"T": "5-minute (to close)", "10": "10-second", "15": "15-second", "30": "30-second", "60": "1-minute"}
+ALLH = ("10", "15", "30", "60", "T")
 L = []
 w = L.append
 
@@ -45,7 +46,7 @@ w("For calibration, `full+recal` adds the causal trailing recalibration. It is f
 w("## 1. P(price ≥ fixed 5-minute reference) — every horizon\n")
 w("| horizon | naive RW | structural | full | full+recal | Δ full vs naive | Δ full vs structural | AUC | accuracy | ECE (full+recal) |")
 w("|---|---|---|---|---|---|---|---|---|---|")
-for H in ("30", "60", "T"):
+for H in ALLH:
     r = main["horizons"].get(H)
     if not r:
         continue
@@ -73,7 +74,7 @@ w("This is P(S(t+h) > S(t)). It isolates genuine predictive power: no informatio
   "relative to K.\n")
 w("| horizon | log loss | AUC | accuracy | top-10%-confidence accuracy | IC (Spearman) |")
 w("|---|---|---|---|---|---|")
-for H in ("30", "60", "T"):
+for H in [h for h in ALLH if h in main["horizons"]]:
     d = main["horizons"][H]["direction"]
     w(f"| {HN[H]} | {f(d['full']['logloss'])} | {f(d['full']['auc'],3)} | {f(d['full']['acc'],3)} | {f(d['top_decile_acc'],3)} | {f(d['ic_spearman'],3)} |")
 
@@ -81,14 +82,14 @@ for H in ("30", "60", "T"):
 w("\n## 3. Magnitude and speed\n")
 w("| horizon | QLIKE naive → model | corr(log σ̂², log RV) naive → model | pinball (bps) naive → full | 50% cov | 90% cov |")
 w("|---|---|---|---|---|---|")
-for H in ("30", "60", "T"):
+for H in [h for h in ALLH if h in main["horizons"]]:
     v = main["horizons"][H]["volatility"]; q = main["horizons"][H]["quantiles"]
     w(f"| {HN[H]} | {f(v['qlike_rv5_naive'],3)} → **{f(v['qlike_rv5_model'],3)}** | {f(v['corr_log_sd_rv5_naive'],3)} → **{f(v['corr_log_sd_rv5_model'],3)}** | "
       f"{f(q['naive_rw']['pinball_bps'],3)} → **{f(q['full']['pinball_bps'],3)}** | {f(q['full']['cov50'],3)} | {f(q['full']['cov90'],3)} |")
 
 # ---------------------------------------------------------------- thresholds / touch / first passage
 w("\n## 4. Levels: thresholds, touches, which comes first\n")
-for H in ("30", "60", "T"):
+for H in [h for h in ALLH if h in main["horizons"]]:
     h = main["horizons"][H]
     w(f"### {HN[H]}\n")
     w("| question | n | base rate | naive LL | structural LL | full LL | full AUC |")
@@ -114,7 +115,7 @@ folds = [("A", wfs["A"]), ("B", wfs["B"]), ("val", val), ("main", main)] + ([("m
 for name, rep in folds:
     if not rep:
         continue
-    for H in ("30", "60", "T"):
+    for H in ALLH:
         if H not in rep["horizons"]:
             continue
         a = rep["horizons"][H]["above_ref"]
@@ -185,7 +186,37 @@ for H, s in seq.items():
         w(f"- **{HN[H]}**: the CNN alone has IC {s['ic_B_cnn']:.4f}; LightGBM drift alone {s['ic_B_lgbm_drift']:.4f}; "
           f"the blend (weight on the CNN {s['blend_w_cnn']:.1f}, chosen on held-out days) {s['ic_B_blend']:.4f}. "
           f"Correlation between the two forecasts: {s['corr_cnn_lgbm']:.2f}.")
-header = (ROOT / "docs" / "report_header.md").read_text() if (ROOT / "docs" / "report_header.md").exists() else ""
+def bottom_line():
+    hz = main["horizons"]
+    B = ["# REPORT — BTC movement relative to the fixed 5-minute reference\n",
+         f"**Bottom line.** These are results on the held-out test period {main['range'][0]} → {main['range'][1]} "
+         f"({main['rows']:,} decision rows). It was never used during development. All numbers below are generated from "
+         "`artifacts/*/report_*.json`.\n"]
+    for H in ALLH:
+        if H not in hz:
+            continue
+        a = hz[H]["above_ref"]; d = hz[H]["direction"]; r = a["full+recal"]
+        B.append(f"* **{HN[H]}** — P(price ≥ K): log loss **{r['logloss']:.3f}** vs **{a['naive_rw']['logloss']:.3f}** for the "
+                 f"naive random walk, an improvement of {mn(a['dll_vs_naive_rw'])} millinats per decision. AUC {r['auc']:.3f}, accuracy "
+                 f"{r['acc']:.1%}, ECE {r['ece']:.4f}. Direction from now: AUC {d['full']['auc']:.3f}, top-10%-confidence "
+                 f"accuracy {d['top_decile_acc']:.1%}.")
+    t = hz["T"]["above_ref_by_e"]
+    last = t.get("240-299"); first = t.get("0-0")
+    if last and first:
+        B.append(f"* Through the 5-minute window, accuracy rises from {first['acc_full']:.1%} at the open (pure direction) "
+                 f"to {last['acc_full']:.1%} in the last minute.")
+    B.append("")
+    B.append("How to read the numbers. Late in the window most of `P(close ≥ K)` is \"physics\": the displacement from K "
+             "measured in units of remaining volatility. Every model gets the easy part right, so the honest comparison is "
+             "against strong baselines, not a coin flip. The genuinely predictive part lives in three places, each "
+             "measured separately below:\n"
+             "1. a much better volatility forecast;\n"
+             "2. a short-horizon drift driven mainly by the perpetual→spot lead-lag;\n"
+             "3. learned corrections of the shape, touches and first passages.\n")
+    return "\n".join(B) + "\n"
+
+
+header = bottom_line()
 footer = (ROOT / "docs" / "report_footer.md").read_text() if (ROOT / "docs" / "report_footer.md").exists() else ""
 (ROOT / "REPORT.md").write_text(header + "\n".join(L) + "\n" + footer)
 print("\n".join(L))

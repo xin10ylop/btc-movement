@@ -24,7 +24,7 @@ import pandas as pd
 
 from . import structural as st
 
-H_LEN = {"30": 30, "60": 60}
+H_LEN = {"10": 10, "15": 15, "30": 30, "60": 60}
 FP_DELTAS = (5, 10, 20, 30)
 TAU_BUCKETS = np.array([0, 10, 30, 60, 120, 200, 300])
 
@@ -106,7 +106,10 @@ class HorizonModel:
     def _vol_target(self, df):
         h = hlen(df, self.H)
         sig2 = df["sig_ref"].to_numpy(np.float64) ** 2
-        return np.clip(df[f"y_rv5_{self.H}"].to_numpy(np.float64) / (h * sig2), 1e-3, 1e3)
+        # >= 30s: 5-second-sampled RV (absorbs the short-lag autocorrelation of 1s returns); for 10s/15s it
+        # would have only 2-3 terms, so the lower-noise 1s RV is used and stage C re-scales the variance.
+        key = f"y_rv5_{self.H}" if self.H == "T" or H_LEN[self.H] >= 30 else f"y_rv_{self.H}"
+        return np.clip(df[key].to_numpy(np.float64) / (h * sig2), 1e-3, 1e3)
 
     def _var_from(self, df, pred):
         return pred * hlen(df, self.H) * df["sig_ref"].to_numpy(np.float64) ** 2

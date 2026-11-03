@@ -96,7 +96,7 @@ for H in a.horizons.split(","):
     rep = {}
     s = S_all[H]
     sd_n = naive_sd(df, H)
-    title = {"T": "5-minute (to the window close)", "30": "30-second", "60": "1-minute"}[H]
+    title = {"T": "5-minute (to the window close)", "10": "10-second", "15": "15-second", "30": "30-second", "60": "1-minute"}[H]
     md.append(f"\n## Horizon {H}: {title}\n")
 
     # ---------------- 1. above the fixed reference price ----------------
@@ -274,6 +274,13 @@ for H in a.horizons.split(","):
     print(f"[{H}] done ({time.time()-t0:.0f}s)", flush=True)
 
 out_json = mdir / f"report_{a.split}.json"
+if out_json.exists():
+    # merge with horizons evaluated in an earlier run (same split/protocol), newest wins
+    old = json.load(open(out_json))
+    if old.get("range") == list(report["range"]) or tuple(old.get("range", ())) == tuple(report["range"]):
+        old["horizons"].update(report["horizons"])
+        report = old
 json.dump(report, open(out_json, "w"), indent=1, default=float)
-(mdir / f"report_{a.split}.md").write_text("\n".join(md) + "\n")
+suffix = "" if a.horizons == "T,30,60" else "_" + a.horizons.replace(",", "-")
+(mdir / f"report_{a.split}{suffix}.md").write_text("\n".join(md) + "\n")
 print("\n".join(md))

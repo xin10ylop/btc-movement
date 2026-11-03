@@ -43,6 +43,13 @@ def load(split: str, frac: float = 1.0, seed: int = 0, columns: list[str] | None
         if me <= lo or ms >= hi_eff:
             continue
         t = pq.read_table(f, columns=columns).to_pandas()
+        xf = feat_dir.parent / "targets_extra" / f.name
+        if xf.exists() and columns is None:
+            x = pq.read_table(xf).to_pandas()
+            assert np.array_equal(x["ts"].to_numpy(), t["ts"].to_numpy()), f"misaligned extra targets {xf}"
+            for k in x.columns:
+                if k not in t.columns:
+                    t[k] = x[k].to_numpy()
         t = t[(t.ts >= lo) & (t.ts < hi_eff)]
         if frac < 1.0:
             # subsample whole windows (keeps within-window structure; avoids near-duplicate rows)

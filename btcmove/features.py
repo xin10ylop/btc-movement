@@ -207,7 +207,7 @@ def _nearest_round(p, unit):
     return lo, lo + unit
 
 
-HORIZONS = (30, 60)
+HORIZONS = (10, 15, 30, 60)
 FP_DELTAS_BPS = (5, 10, 20, 30)
 
 

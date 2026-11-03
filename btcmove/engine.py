@@ -18,7 +18,7 @@ from .recal import Recalibrator
 STACK_FROM = ("30", "60")
 LEVELS_BPS = (-30, -20, -10, -5, 5, 10, 20, 30)
 QPROBS = (0.05, 0.25, 0.5, 0.75, 0.95)
-NAMES = {"30": "30s", "60": "60s", "T": "close"}
+NAMES = {"10": "10s", "15": "15s", "30": "30s", "60": "60s", "T": "close"}
 
 
 def stack_columns(df: pd.DataFrame, s: dict, H: str) -> dict:
@@ -34,7 +34,7 @@ class Engine:
     def load(cls, mdir: str | Path) -> "Engine":
         mdir = Path(mdir)
         ms = {}
-        for H in ("30", "60", "T"):
+        for H in ("10", "15", "30", "60", "T"):
             p = mdir / f"horizon_{H}.pkl"
             if p.exists():
                 with open(p, "rb") as f:
