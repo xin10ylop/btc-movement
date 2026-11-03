@@ -7,3 +7,7 @@ artifacts/samples/
 .ipynb_checkpoints/
 artifacts/smoke/
 artifacts/*.out
+# comparison / walk-forward model binaries are reproducible; only their reports are versioned
+artifacts/models_v1/*.pkl
+artifacts/wf_*/*.pkl
+artifacts/*.done

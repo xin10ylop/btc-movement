@@ -38,9 +38,9 @@ K = outs[0]["reference_price"]
 final = float(ser["c"][t_win - lo + 299])
 print(f"window {dt.datetime.fromtimestamp(t_win, dt.UTC):%Y-%m-%d %H:%M} UTC   reference K = {K:.2f}   "
       f"final close = {final:.2f} ({'UP' if final >= K else 'DOWN'})   [{el/len(outs)*1e3:.0f} ms per second]")
-print(" e   price      d(bps)  P(close>=K)  P(30s>=K)  P(60s>=K)  sd_close(bps)  P(touch K+10bp)  P(touch K-10bp)")
+hz = [h for h in ("10s", "15s", "30s", "60s", "close") if h in outs[0]["horizons"]]
+print(" e    price     d(bps) " + " ".join(f"P({h}>=K)" for h in hz) + "  sd_close  touch K+10  touch K-10  alert")
 for o in outs[::15]:
     c = o["horizons"]["close"]
-    print(f"{o['elapsed_s']:3d} {o['price']:10.2f} {o['displacement_bps']:7.2f}   {c['p_above_reference']:.3f}      "
-          f"{o['horizons']['30s']['p_above_reference']:.3f}      {o['horizons']['60s']['p_above_reference']:.3f}      "
-          f"{c['sd_bps']:6.2f}          {c['levels']['K+10bp']['p_touch_before_end']:.3f}            {c['levels']['K-10bp']['p_touch_before_end']:.3f}")
+    print(f"{o['elapsed_s']:3d} {o['price']:10.2f} {o['displacement_bps']:6.2f}  " + " ".join(f"{o['horizons'][h]['p_above_reference']:9.3f}" for h in hz)
+          + f"   {c['sd_bps']:6.2f}    {c['levels']['K+10bp']['p_touch_before_end']:.3f}       {c['levels']['K-10bp']['p_touch_before_end']:.3f}    {o['monitor']['regime_alert']}")

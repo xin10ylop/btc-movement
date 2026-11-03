@@ -56,8 +56,9 @@ class Engine:
                 out[H] = s
                 for k, v in stack_columns(df, s, H).items():
                     df[k] = v
-        if "T" in self.models:
-            out["T"] = self.models["T"].predict_struct(df)
+        for H, hm in self.models.items():   # every other horizon (incl. 10s/15s and the 5-minute stack)
+            if H not in out:
+                out[H] = hm.predict_struct(df)
         return df, out
 
     # --------------------------------------------------------------------------------------

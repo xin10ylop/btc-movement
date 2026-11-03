@@ -33,6 +33,14 @@ sharing no code with the feature pipeline. On the test period:
 * **No transaction costs or market prices.** Log-loss gains are statistical skill. Turning them into profit
   against a real order book or prediction market depends on its prices, fees and latency, none of which are
   modelled here.
-* **Regime risk.** Walk-forward folds cover May 2025 to Nov 2026, including very different volatility regimes,
-  with consistent gains. A structural change in market microstructure (for example a venue migration of price
-  discovery) would require retraining with `scripts/11_train_production.sh`.
+* **Regime risk.** Three fully separate retrains were tested on a bull run (May–Aug 2025), a 43% crash (Nov 2025 – Feb
+  2026) and a bear low and rebound (Jun–Nov 2026). They improve on the naive baseline in every month and every
+  regime slice. The edge is smallest in the crash fold: the 5-minute gain is +15.6 millinats there against +44 in
+  2026, and the 30s direction AUC is 0.58 against 0.62. It is also smallest in the busiest hours, where spot catches
+  up with the perpetual fastest. A structural change in market microstructure (for example a venue migration of
+  price discovery) would require retraining with `scripts/11_train_production.sh`; the live `regime_alert` is
+  designed to tell you when.
+* **Architecture.** A temporal CNN reading the raw last 60 seconds learns a forecast that is 0.94 correlated with
+  the gradient-boosted drift and adds no incremental IC (§7). The edge is captured by the engineered features. More
+  model capacity is unlikely to help; more *information* (order-book data, other venues) is where further gains
+  would come from.

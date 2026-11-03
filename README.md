@@ -22,7 +22,20 @@ For each horizon the engine outputs:
 * **which comes first** — `P(+δ first)`, `P(−δ first)`, `P(neither)` from the current price, within the horizon
 * **speed** — forecast volatility per √second for the horizon
 
-See **[REPORT.md](REPORT.md)** for the full out-of-sample evaluation.
+### Results at a glance (held-out test, 1 Jun – 2 Nov 2026, 44,352 windows never used in development)
+
+| horizon | naive RW log loss | **model** log loss | Δ vs naive, millinats [95% CI]¹ | AUC | accuracy | direction-from-now AUC | top-10% direction accuracy |
+|---|---|---|---|---|---|---|---|
+| 10 s | 0.233 | **0.190** | +43.4 [+39.5, +47.7] | 0.978 | 92.0% | 0.658 | 76.7% |
+| 15 s | 0.274 | **0.231** | +43.4 [+39.5, +47.7] | 0.967 | 90.1% | 0.644 | 74.8% |
+| 30 s | 0.358 | **0.316** | +41.5 [+37.8, +45.7] | 0.938 | 85.8% | 0.616 | 71.2% |
+| 1 min | 0.456 | **0.420** | +36.1 [+33.3, +39.3] | 0.887 | 79.8% | 0.585 | 66.3% |
+| 5 min (to close) | 0.534 | **0.487** | +43.7 [+38.1, +49.8] | 0.838 | 74.4% | 0.562 | 63.7% |
+
+These are `P(price ≥ fixed 5-minute reference)` probabilities, re-evaluated every ~10 s through every window. The 5-minute row uses the adaptive prior/head ensemble that ships in the live engine. The improvement over the naive random walk is positive in **every month** of every test period, in **three walk-forward retrains** (bull run, −43% crash, bear low and rebound) and in **every regime slice**: volatility, trend, drawdown, vol expansion, intraday activity and weekday/weekend. Full details are in [REPORT.md](REPORT.md).
+
+¹ Δ is for the boosted head before recalibration. For the 5-minute horizon the adaptive ensemble adds a further +0.9 [+0.6, +1.2] millinats.
+
 
 ---
 
@@ -150,9 +163,15 @@ run, a crash and a bear-market rebound (see REPORT.md §5–6).
 ```bash
 pip install -r requirements.txt
 python scripts/01_download_build.py --spot --futures --start 2024-01 --end 2026-11   # ~10 GB raw → 1s npz
-python scripts/02_build_features.py --start 2024-02 --end 2026-11                    # sampled features
-python scripts/03_train.py --frac 0.35                                               # ≈1 h on 4 cores
-python scripts/04_evaluate.py --split test                                           # writes artifacts/models/report_test.md
+python scripts/02_build_features.py --start 2024-02 --end 2026-11                    # features + labels + regime table
+python scripts/02b_build_extra_targets.py --horizons 10,15                           # labels for the 10s/15s horizons
+python scripts/03_train.py --frac 0.35 --horizons 30,60,T                            # ≈45 min on 4 cores (v2 recipe)
+python scripts/03_train.py --frac 0.3  --horizons 10,15                              # 10s / 15s stacks
+python scripts/04_evaluate.py --split test --horizons T,30,60                        # artifacts/models/report_test.*
+python scripts/04_evaluate.py --split test --horizons 10,15                          # merged into the same report
+python scripts/14_regime_eval.py --split test                                        # regime-sliced results
+python scripts/10_fit_recal.py                                                       # initial live recalibration
+MAIN=models python scripts/08_make_report.py                                         # REPORT.md
 python -m pytest tests -q
 ```
 
@@ -168,17 +187,12 @@ the live engine (`scripts/09_replay_demo.py`). Two minutes into the window the p
 the reference:
 
 ```json
-{"ts": 1792074720, "window_start": 1792074600, "elapsed_s": 120, "remaining_s": 180,
- "reference_price": 81171.11, "price": 81035.58, "displacement_bps": -16.70,
+{"ts": 1792074720, "window_start": 1792074600, "elapsed_s": 120, "remaining_s": 180, "reference_price": 81171.11, "price": 81035.58, "displacement_bps": -16.7,
  "horizons": {
-  "close": {"p_above_reference": 0.1139, "p_above_reference_raw": 0.1105, "p_up_from_now": 0.5021,
-            "expected_move_bps": 0.14, "sd_bps": 16.23, "vol_bps_per_sqrt_s": 1.21,
-            "levels": {"K-10bp": {"price": 81089.98, "p_end_above": 0.31,   "p_touch_before_end": 0.5425},
-                       "K+10bp": {"price": 81252.32, "p_end_above": 0.0365, "p_touch_before_end": 0.0549}},
-            "first_passage_from_now": {"10bp": {"up_first": 0.409, "down_first": 0.402, "neither": 0.189}},
-            "price_quantiles": {"q05": 80835.7, "q25": 80962.15, "q50": 81036.15, "q75": 81110.37, "q95": 81231.57}},
-  "30s":   {"p_above_reference": 0.0043, "p_up_from_now": 0.4773, "expected_move_bps": -0.41, "sd_bps": 6.83, "...": "..."},
-  "60s":   {"...": "..."}}}
+  "close": {"horizon_s": 180.0, "p_above_reference": 0.1212, "p_above_reference_raw": 0.1071, "p_above_reference_structural": 0.1132, "p_below_reference": 0.8788, "p_up_from_now": 0.4665, "expected_move_bps": -0.783, "sd_bps": 16.3784, "vol_bps_per_sqrt_s": 1.2208, "levels": {"K-10bp": {"price": 81089.98, "p_end_above": 0.2819, "p_touch_before_end": 0.5465}, "K+10bp": {"price": 81252.32, "p_end_above": 0.0325, "p_touch_before_end": 0.0559}}, "first_passage_from_now": {"10bp": {"up_first": 0.368, "down_first": 0.442, "neither": 0.19}}, "price_quantiles": {"q05": 80823.65, "q25": 80951.8, "q50": 81026.49, "q75": 81101.35, "q95": 81222.02}},
+  "10s":   {"horizon_s": 10.0, "p_above_reference": 0.0009, "p_above_reference_raw": 0.0009, "p_above_reference_structural": 0.0038, "p_below_reference": 0.9991, "p_up_from_now": 0.4358, "expected_move_bps": -0.4494, "sd_bps": 4.7706, "vol_bps_per_sqrt_s": 1.5086, "levels": {"K-10bp": {"price": 81089.98, "p_end_above": 0.0292, "p_touch_before_end": 0.0417}, "K+10bp": {"price": 81252.32, "p_end_above": 0.0007, "p_touch_before_end": 0.0007}}, "first_passage_from_now": {"10bp": {"up_first": 0.007, "down_first": 0.014, "neither": 0.979}}, "price_quantiles": {"q05": 80988.63, "q25": 81018.88, "q50": 81032.49, "q75": 81046.2, "q95": 81077.26}},
+  "15s": {"...": "..."}, "30s": {"...": "..."}, "60s": {"...": "..."}},
+ "monitor": {"skill_24h_nats": {"10": null, "15": null, "30": null, "60": null, "T": null}, "cusum_5m": 0.0, "regime_alert": false, "reasons": []}}
 ```
 
 * `p_above_reference` is the recalibrated probability that the horizon's price is ≥ K, and `_raw` is the value before
@@ -187,7 +201,9 @@ the reference:
   ends. A level above the current price is reached from below, a level below it from above.
 * `first_passage_from_now` is the probability of a +δ move before a −δ move from the current price (or neither) within
   the horizon.
-* The prediction takes about 65–75 ms per second on one CPU core for all horizons and outputs.
+* `p_above_reference_structural` is the analytic prior. For the 5-minute horizon the live recalibrator blends it with
+  the boosted head (adaptive ensemble). `monitor` reports rolling skill against the naive baseline and the `regime_alert`.
+* The prediction takes about 105 ms per second for all five horizons and every output.
 
 ## 5. Layout
 
@@ -203,7 +219,9 @@ btcmove/
   regime.py               causal multi-day regime state (daily aggregates -> rg_* features)
   live.py                 rolling-buffer real-time predictor + Binance connector + replay
   metrics.py              scoring rules, calibration, day-block bootstrap
-scripts/                  01 download → 02 features → 03 train → 04 evaluate → 05/06/13 experiments →
+scripts/                  01 download → 02/02b features & labels → 03 train → 04 evaluate → 05/06/13/15 experiments →
                           07 walk-forward → 08 report → 09 replay → 10 recal → 11 production → 12 audit → 14 regimes
+artifacts/models/         production models (v2 recipe, 5 horizons) + recal.json + reports
+artifacts/models_v1/      reports of the v1 recipe (for comparison); artifacts/wf_*: walk-forward reports
 tests/                    look-ahead, structural-vs-Monte-Carlo, streaming-vs-batch
 ```
