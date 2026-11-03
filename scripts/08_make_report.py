@@ -59,6 +59,22 @@ w("\n*naive RW* is a driftless Gaussian random walk using the last 5 minutes' re
   "*full* adds the prior-boosted head. For 30s and 60s the table uses decision times whose horizon ends inside the "
   "window.\n")
 
+ad = {sp: load(f"ablation/adaptive_ensemble_{MAIN}_{sp}.json") for sp in ("val", "test")}
+if ad["test"]:
+    w("### Adaptive prior/head ensemble (regime-adaptive weighting)\n")
+    w("Each UTC day and elapsed-time bucket, a logistic stack of logit(boosted head) and logit(structural prior) is refitted "
+      "on the previous 14 days of resolved outcomes. Where the ML correction stops helping, for example at the window "
+      "open or after a regime shift, weight moves back to the analytic prior. It was chosen for the 5-minute horizon on "
+      "validation; the other horizons keep the 2-parameter recalibration.\n")
+    w("| split | horizon | structural | full | full+recal | adaptive | Δ adaptive vs recal (millinats) |")
+    w("|---|---|---|---|---|---|---|")
+    for sp in ("val", "test"):
+        for H, r_ in (ad[sp] or {}).items():
+            d_ = r_["adaptive_vs_recal"]
+            w(f"| {sp} | {HN[H]} | {r_['structural']['all']:.4f} | {r_['full']['all']:.4f} | {r_['full+recal']['all']:.4f} | "
+              f"{r_['adaptive']['all']:.4f} | {d_['mean']*1e3:+.2f} [{d_['ci95'][0]*1e3:+.2f}, {d_['ci95'][1]*1e3:+.2f}] |")
+    w("")
+
 r = main["horizons"]["T"]
 w("### 5-minute model, continuously through the window (test)\n")
 w("| elapsed (s) | n | naive RW | structural | full | full+recal | AUC | accuracy |")
@@ -200,6 +216,10 @@ def bottom_line():
                  f"naive random walk, an improvement of {mn(a['dll_vs_naive_rw'])} millinats per decision. AUC {r['auc']:.3f}, accuracy "
                  f"{r['acc']:.1%}, ECE {r['ece']:.4f}. Direction from now: AUC {d['full']['auc']:.3f}, top-10%-confidence "
                  f"accuracy {d['top_decile_acc']:.1%}.")
+    adt = load(f"ablation/adaptive_ensemble_{MAIN}_test.json")
+    if adt and "T" in adt:
+        B.append(f"* With the adaptive prior/head ensemble that ships in the live engine, the 5-minute log loss is "
+                 f"**{adt['T']['adaptive']['all']:.4f}**.")
     t = hz["T"]["above_ref_by_e"]
     last = t.get("240-299"); first = t.get("0-0")
     if last and first:

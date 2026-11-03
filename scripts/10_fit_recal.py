@@ -27,8 +27,8 @@ df, S_ = eng.augment(df)
 rc = Recalibrator()
 now = int(df["ts"].max()) + 3601
 for H, hm in eng.models.items():
-    p, _ = hm.predict_above(df, S_[H])
+    p, ps = hm.predict_above(df, S_[H])
     y = hm._d1_target(df)
-    rc.fit(H, df["ts"].to_numpy(), df["e"].to_numpy(), p, y, now_ts=now)
+    rc.fit(H, df["ts"].to_numpy(), df["e"].to_numpy(), p, y, now_ts=now, p_struct=ps)
 json.dump(rc.to_json(), open(Path(a.models) / "recal.json", "w"), indent=1)
 print(json.dumps(rc.to_json(), indent=1))

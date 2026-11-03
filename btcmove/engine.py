@@ -74,8 +74,8 @@ class Engine:
                     displacement_bps=float((S[i] / K[i] - 1) * 1e4), horizons={}) for i in range(n)]
         for H, hm in self.models.items():
             s = S_[H]
-            p_raw, _ = hm.predict_above(df, s)
-            p_above = self.recal.apply(H, df["e"].to_numpy(), p_raw) if self.recal is not None else p_raw
+            p_raw, p_st = hm.predict_above(df, s)
+            p_above = self.recal.apply(H, df["e"].to_numpy(), p_raw, p_struct=p_st) if self.recal is not None else p_raw
             p_up, _ = hm.predict_cdf(df, np.full(n, 1e-12), s=s)
             # all levels / first-passage sizes in one batched call each
             Lv = np.asarray(levels_bps, float)
@@ -103,6 +103,7 @@ class Engine:
                     "horizon_s": float(h[i]),
                     "p_above_reference": float(p_above[i]),
                     "p_above_reference_raw": float(p_raw[i]),
+                    "p_above_reference_structural": float(p_st[i]),
                     "p_below_reference": float(1 - p_above[i]),
                     "p_up_from_now": float(p_up[i]),
                     "expected_move_bps": float(s["mu"][i] * 1e4),

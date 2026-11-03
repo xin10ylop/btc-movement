@@ -17,12 +17,19 @@ sharing no code with the feature pipeline. On the test period:
 * **Latency.** The lead-lag edge lives at the 1–3 second scale. The live engine needs both feeds with low
   latency, and stale perp data silently removes most of the directional skill. Ablations show that removing
   the perp features costs about a third of the 30s drift IC.
-* **Window-open direction is close to efficient.** At `e = 0` the 5-minute AUC is about 0.53, and the boosted
-  head does not beat the analytic model there (validation and test agree). The value of the 5-minute model is in
-  continuous re-pricing through the window, not in calling the direction at the open.
-* **Calibration drift.** In 2026 the raw 5-minute model is slightly over-confident at the extremes. The causal
-  14-day trailing recalibration removes this (ECE 0.012 → 0.003 on test). The live engine refits it daily from
+* **Window-open direction is close to efficient.** At `e = 0` the 5-minute AUC is about 0.53. The boosted head is
+  slightly worse than the analytic prior there; validation and test agree. The adaptive ensemble therefore
+  falls back to the prior at the open (test log loss 0.6917, against 0.6937 for the head alone). The value of the
+  5-minute model is in continuous re-pricing through the window, not in calling the direction at the open. For
+  that, the 10s–60s models are much stronger.
+* **Calibration drift.** In 2026 the raw 5-minute head is slightly over-confident at the extremes. The causal
+  14-day trailing recalibration removes this (ECE 0.014 → 0.003 on test). The live engine refits it daily from
   its own resolved predictions.
+* **Explicit regime features add little.** Multi-day regime state in the volatility engine plus 180-day recency
+  weighting (the v2 recipe) is statistically indistinguishable from v1 on both validation and test (≤ 0.8 millinats,
+  inside the CIs). The robustness comes from volatility-standardised inputs, causal recalibration and the adaptive
+  ensemble, not from regime labels. v2 is kept as the production recipe because it was the validation choice and
+  adapts faster to structural change; v1 results are reported alongside.
 * **No transaction costs or market prices.** Log-loss gains are statistical skill. Turning them into profit
   against a real order book or prediction market depends on its prices, fees and latency, none of which are
   modelled here.

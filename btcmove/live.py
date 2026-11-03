@@ -99,7 +99,7 @@ class LivePredictor:
         # self-monitoring for the causal daily recalibration
         self.log_every = log_every
         self.adapt = adapt
-        self.pending = deque()          # (resolve_ts, H, ts, e, p_raw, K, p_naive)
+        self.pending = deque()          # (resolve_ts, H, ts, e, p_raw, K, p_naive, p_struct)
         self.resolved = {H: [] for H in ("10", "15", "30", "60", "T")}
         self._day = None
         # regime state (daily aggregates -> causal regime features), refreshed every UTC day
@@ -185,11 +185,11 @@ class LivePredictor:
 
     def _resolve(self):
         while self.pending and self.pending[0][0] <= self.buf.ts_last:
-            rt, H, ts, e, p, K, pn = self.pending.popleft()
+            rt, H, ts, e, p, K, pn, pst = self.pending.popleft()
             c = self._close_at(rt)
             if np.isfinite(c):
                 y = float(c >= K)
-                self.resolved[H].append((ts, e, p, y))
+                self.resolved[H].append((ts, e, p, y, pst))
                 self.monitor.update(H, ts, p, pn, y)
         horizon = 14 * 86400
         for H, L in self.resolved.items():
@@ -203,7 +203,7 @@ class LivePredictor:
         for H, L in self.resolved.items():
             if len(L) >= 5000:
                 a = np.array(L)
-                self.engine.recal.fit(H, a[:, 0], a[:, 1], a[:, 2], a[:, 3], now_ts)
+                self.engine.recal.fit(H, a[:, 0], a[:, 1], a[:, 2], a[:, 3], now_ts, p_struct=a[:, 4])
         self.monitor.calib = {H: dict(v) for H, v in self.engine.recal.params.items()}
 
     def predict(self, k_open: float | None = None) -> dict:
@@ -218,8 +218,9 @@ class LivePredictor:
                     hs = out["horizons"][name]["horizon_s"]
                     rt = out["window_start"] + 299 if H == "T" else ts + int(hs) - 1
                     pn = float(_sp.ndtr(d / (lsd * np.sqrt(hs) + 1e-12)))
-                    self.pending.append((rt, H, ts, out["elapsed_s"], out["horizons"][name]["p_above_reference_raw"],
-                                         out["reference_price"], pn))
+                    hz = out["horizons"][name]
+                    self.pending.append((rt, H, ts, out["elapsed_s"], hz["p_above_reference_raw"],
+                                         out["reference_price"], pn, hz["p_above_reference_structural"]))
             self.pending = deque(sorted(self.pending))
         out["monitor"] = self.monitor.status()
         return out
@@ -269,7 +270,8 @@ class RegimeMonitor:
 
     def status(self):
         sk = {H: (float(np.mean([v for _, v in q])) if len(q) >= 200 else None) for H, q in self.hist.items()}
-        slopes = [a for g in self.calib.values() for (a, b) in g.values()]
+        # effective slope on the logit scale (sum of weights for the adaptive prior/head ensemble)
+        slopes = [w[0] + (w[1] if len(w) == 3 else 0.0) for g in self.calib.values() for w in g.values()]
         reasons = []
         if self.cusum > self.h:
             reasons.append("cusum_5m_skill")
