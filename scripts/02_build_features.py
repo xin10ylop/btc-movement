@@ -70,3 +70,10 @@ for period in month_range(a.start, a.end):
     tab = pa.table({k: v for k, v in F.items()})
     pq.write_table(tab, out, compression="zstd")
     print(f"{period}: {len(idx)} rows, {len(F)} cols, {time.time()-t0:.0f}s", flush=True)
+
+# ---- causal multi-day regime state (daily aggregates + rg_* table) ----
+from btcmove import regime as rg  # noqa: E402
+daily = rg.build_daily()
+np.savez(DATA / "regime_daily.npz", **daily)
+rg.save(rg.regime_table(daily), DATA / "regime.npz")
+print(f"regime table: {len(daily['day'])} days", flush=True)

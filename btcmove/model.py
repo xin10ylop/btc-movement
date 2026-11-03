@@ -35,6 +35,7 @@ BASE = dict(learning_rate=0.05, num_leaves=63, min_data_in_leaf=2000, feature_fr
 # Pure calendar features are allowed in the volatility engine (intraday vol seasonality is robust) but
 # excluded from every directional model: calendar "drift" effects are a classic source of overfitting.
 CALENDAR = ("hour_sin", "hour_cos", "dow", "min_of_hour", "sec_of_min")
+# Multi-day regime state (btcmove/regime.py, prefix rg_) is likewise allowed only in the volatility engine.
 
 
 def hlen(df: pd.DataFrame, H: str) -> np.ndarray:
@@ -48,12 +49,12 @@ def _X(df, cols):
 
 
 def _fit(X, y, params, rounds, Xv=None, yv=None, init=None, initv=None, early=60, log=None,
-         monotone=None):
+         monotone=None, weight=None):
     p = dict(BASE); p.update(params)
     if monotone is not None:
         p["monotone_constraints"] = monotone
         p["monotone_constraints_method"] = "advanced"
-    ds = lgb.Dataset(X, y, init_score=init, free_raw_data=True)
+    ds = lgb.Dataset(X, y, init_score=init, weight=weight, free_raw_data=True)
     valid = []
     cb = []
     if Xv is not None:
@@ -93,11 +94,13 @@ class HorizonModel:
     def __init__(self, H: str, feats: list[str], log=print, n_folds: int = 3):
         self.H = H
         self.feats = list(feats)
-        self.dir_feats = [f for f in self.feats if f not in CALENDAR]
+        # regime state may scale volatility / tails but never drive direction (same rule as calendar features)
+        self.dir_feats = [f for f in self.feats if f not in CALENDAR and not f.startswith("rg_")]
         self.log = log
         self.n_folds = n_folds
         self.models = {}
         self.shape = {}
+        self.w_tr = None          # optional per-row training weights (e.g. recency decay)
 
     # ------------------------------------------------------------------ stage A / B
     def _vol_target(self, df):
@@ -118,13 +121,14 @@ class HorizonModel:
         ytr, yva = self._vol_target(tr), self._vol_target(va)
         L(f"[{self.H}] stage A vol")
         pv = dict(objective="gamma", learning_rate=0.08)
-        full = _fit(Xtr, ytr, pv, 2000, Xva, yva, log=L)
+        W = self.w_tr
+        full = _fit(Xtr, ytr, pv, 2000, Xva, yva, log=L, weight=W)
         n_it = full.best_iteration or full.current_iteration()
         self.models["vol"] = full
         oof = np.empty(len(tr))
         ts = tr["ts"].to_numpy()
         for trm, tem in _blocks(ts, self.n_folds):
-            b = _fit(Xtr[trm], ytr[trm], pv, n_it, log=L)
+            b = _fit(Xtr[trm], ytr[trm], pv, n_it, log=L, weight=None if W is None else W[trm])
             oof[tem] = b.predict(Xtr[tem])
         sd_tr = np.sqrt(self._var_from(tr, oof))
         sd_va = np.sqrt(self._var_from(va, full.predict(Xva, num_iteration=n_it)))
@@ -134,12 +138,12 @@ class HorizonModel:
         utr, uva = self._drift_target(tr, sd_tr), self._drift_target(va, sd_va)
         pd_ = dict(objective="regression", learning_rate=0.05, num_leaves=31, min_data_in_leaf=5000,
                    lambda_l2=50.0)
-        fullb = _fit(Xtr, utr, pd_, 3000, Xva, uva, log=L)
+        fullb = _fit(Xtr, utr, pd_, 3000, Xva, uva, log=L, weight=W)
         n_itb = fullb.best_iteration or fullb.current_iteration()
         self.models["drift"] = fullb
         moof = np.empty(len(tr))
         for trm, tem in _blocks(ts, self.n_folds):
-            b = _fit(Xtr[trm], utr[trm], pd_, n_itb, log=L)
+            b = _fit(Xtr[trm], utr[trm], pd_, n_itb, log=L, weight=None if W is None else W[trm])
             moof[tem] = b.predict(Xtr[tem])
         m_va = fullb.predict(Xva, num_iteration=n_itb)
         return (sd_tr, moof), (sd_va, m_va)
@@ -267,7 +271,7 @@ class HorizonModel:
             Xt, pt, names = self._d1_inputs(tr, s_tr)
             Xv, pv, _ = self._d1_inputs(va, s_va)
             self.models["d1"] = _fit(Xt, self._d1_target(tr), hp, 3000, Xv, self._d1_target(va),
-                                     init=st.logit(pt), initv=st.logit(pv), log=L)
+                                     init=st.logit(pt), initv=st.logit(pv), log=L, weight=self.w_tr)
             self.d1_names = names
         if "d2" in heads:
             L(f"[{self.H}] D2 conditional-CDF head")
@@ -280,7 +284,7 @@ class HorizonModel:
             mono[names.index("g")] = -1
             mono[names.index("s_lp")] = 1
             self.models["d2"] = _fit(Xt, yt, hp, 3000, Xv, yv, init=st.logit(pt), initv=st.logit(pv), log=L,
-                                     monotone=mono)
+                                     monotone=mono, weight=self.w_tr)
         if "d3" in heads:
             L(f"[{self.H}] D3 touch head")
             gt, sdt = self._d3_draw(len(tr), rng)
@@ -291,7 +295,7 @@ class HorizonModel:
             mono[names.index("g")] = -1
             self.models["d3"] = _fit(Xt, self._d3_target(tr, s_tr, gt, sdt), dict(hp, learning_rate=0.06), 3000, Xv,
                                      self._d3_target(va, s_va, gv, sdv), init=st.logit(pt), initv=st.logit(pv),
-                                     log=L, monotone=mono)
+                                     log=L, monotone=mono, weight=self.w_tr)
         if "d4" in heads:
             L(f"[{self.H}] D4 first-passage head")
             dt_ = rng.choice(FP_DELTAS, len(tr)); dv_ = rng.choice(FP_DELTAS, len(va))
@@ -301,7 +305,8 @@ class HorizonModel:
             yv, tiev = self._d4_target(va, dv_)
             mp = dict(hp); mp.update(objective="multiclass", num_class=3, learning_rate=0.06)
             self.models["d4"] = _fit(Xt[~tiet], yt[~tiet], mp, 3000, Xv[~tiev], yv[~tiev],
-                                     init=np.log(Pt[~tiet]), initv=np.log(Pv[~tiev]), log=L)
+                                     init=np.log(Pt[~tiet]), initv=np.log(Pv[~tiev]), log=L,
+                                     weight=None if self.w_tr is None else self.w_tr[~tiet])
 
     # ------------------------------------------------------------------ inference
     def predict_struct(self, df):

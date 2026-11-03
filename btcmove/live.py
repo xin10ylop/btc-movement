@@ -24,7 +24,9 @@ import numpy as np
 import pandas as pd
 
 from . import features as fe
+from . import regime as rg
 from .engine import Engine
+from scipy import special as _sp
 
 BUF = 2 * 86400 + 3600
 SPOT_FIELDS = ("o", "h", "l", "c", "v", "qv", "tbv", "n")
@@ -97,18 +99,44 @@ class LivePredictor:
         # self-monitoring for the causal daily recalibration
         self.log_every = log_every
         self.adapt = adapt
-        self.pending = deque()          # (resolve_ts, H, ts, e, p_raw, K)
+        self.pending = deque()          # (resolve_ts, H, ts, e, p_raw, K, p_naive)
         self.resolved = {H: [] for H in ("30", "60", "T")}
         self._day = None
+        # regime state (daily aggregates -> causal regime features), refreshed every UTC day
+        self.reg_daily = None
+        self.reg_table = None
+        # regime-break monitor
+        self.monitor = RegimeMonitor()
 
     @classmethod
-    def from_artifacts(cls, mdir="artifacts/models", seasonal_path="data/seasonal.npz", **kw):
+    def from_artifacts(cls, mdir="artifacts/models", seasonal_path="data/seasonal.npz",
+                       regime_daily_path="data/regime_daily.npz", **kw):
         eng = Engine.load(mdir)
         seas = None
         if Path(seasonal_path).exists():
             z = np.load(seasonal_path)
             seas = {k: (int(z[k]) if k == "ts0" else z[k]) for k in z.files}
-        return cls(eng, seas, **kw)
+        obj = cls(eng, seas, **kw)
+        if Path(regime_daily_path).exists():
+            z = np.load(regime_daily_path)
+            obj.reg_daily = {k: z[k] for k in z.files}
+            obj.reg_table = rg.regime_table(obj.reg_daily)
+        return obj
+
+    def _roll_regime_day(self, day_done: int):
+        """Append the just-completed UTC day (from the rolling buffer) to the daily aggregates."""
+        if self.reg_daily is None or day_done in set(self.reg_daily["day"].tolist()):
+            return
+        n = self.buf.n
+        end_ts = self.buf.ts_last + 1
+        j1 = n - (end_ts - (day_done + 1) * 86400)
+        j0 = j1 - 86400
+        if j0 < 0:
+            return
+        a = self.buf.a
+        agg = rg.daily_aggregates(a["c"][j0:j1], a["v"][j0:j1], a["fc"][j0:j1], a["fv"][j0:j1], day_done * 86400)
+        self.reg_daily = {k: np.concatenate([self.reg_daily[k], agg[k]]) for k in self.reg_daily}
+        self.reg_table = rg.regime_table(self.reg_daily)
 
     def _seasonal_for(self, ts):
         if self.seasonal is None:
@@ -137,14 +165,18 @@ class LivePredictor:
             k_open = float(self.buf.a["c"][self.buf.n - 1])  # best available until the first trade prints
         ser, idx = self.buf.series(k_open if e == 0 else None)
         F = fe.compute(ser, np.array([idx]), seasonal=self._seasonal_for(ts_now), with_targets=False)
+        if self.reg_table is not None:
+            F.update(rg.lookup(self.reg_table, np.array([ts_now])))
         return pd.DataFrame({k: np.asarray(v) for k, v in F.items()})
 
     def push(self, ts: int, spot: dict, fut: dict | None):
         self.buf.push(ts, spot, fut)
         self._resolve()
         day = ts // 86400
-        if self.adapt and self._day is not None and day != self._day:
-            self.refit_recal(now_ts=day * 86400)
+        if self._day is not None and day != self._day:
+            self._roll_regime_day(self._day)
+            if self.adapt:
+                self.refit_recal(now_ts=day * 86400)
         self._day = day
 
     def _close_at(self, t):
@@ -153,10 +185,12 @@ class LivePredictor:
 
     def _resolve(self):
         while self.pending and self.pending[0][0] <= self.buf.ts_last:
-            rt, H, ts, e, p, K = self.pending.popleft()
+            rt, H, ts, e, p, K, pn = self.pending.popleft()
             c = self._close_at(rt)
             if np.isfinite(c):
-                self.resolved[H].append((ts, e, p, float(c >= K)))
+                y = float(c >= K)
+                self.resolved[H].append((ts, e, p, y))
+                self.monitor.update(H, ts, p, pn, y)
         horizon = 14 * 86400
         for H, L in self.resolved.items():
             if len(L) > 1.2 * horizon / self.log_every:
@@ -170,22 +204,80 @@ class LivePredictor:
             if len(L) >= 5000:
                 a = np.array(L)
                 self.engine.recal.fit(H, a[:, 0], a[:, 1], a[:, 2], a[:, 3], now_ts)
+        self.monitor.calib = {H: dict(v) for H, v in self.engine.recal.params.items()}
 
     def predict(self, k_open: float | None = None) -> dict:
         row = self.features_now(k_open)
         out = self.engine.predict(row, quantiles=self.quantiles)[0]
         ts = out["ts"]
         if ts % self.log_every == 0 or out["elapsed_s"] == 0:
+            lsd = np.sqrt(np.exp(float(row["lrv_300"].iloc[0])))
+            d = np.log(out["price"] / out["reference_price"])
             for H, name in (("30", "30s"), ("60", "60s"), ("T", "close")):
                 if name in out["horizons"]:
+                    hs = out["horizons"][name]["horizon_s"]
                     rt = ts + 29 if H == "30" else ts + 59 if H == "60" else out["window_start"] + 299
-                    self.pending.append((rt, H, ts, out["elapsed_s"], out["horizons"][name]["p_above_reference_raw"], out["reference_price"]))
+                    pn = float(_sp.ndtr(d / (lsd * np.sqrt(hs) + 1e-12)))
+                    self.pending.append((rt, H, ts, out["elapsed_s"], out["horizons"][name]["p_above_reference_raw"],
+                                         out["reference_price"], pn))
             self.pending = deque(sorted(self.pending))
+        out["monitor"] = self.monitor.status()
         return out
 
     def on_second(self, ts: int, spot: dict, fut: dict | None, k_open: float | None = None) -> dict:
         self.push(ts, spot, fut)
         return self.predict(k_open)
+
+
+class RegimeMonitor:
+    """Detects regime breaks from the model's own resolved predictions.
+
+    * skill_24h[H]: mean log-loss advantage over the naive random walk during the last 24 hours (nats/decision)
+    * CUSUM on the 5-minute skill, aggregated per window: S = max(0, S + (mu0 - x - k)); alarm if S > h
+    * calibration slope of the latest daily recalibration outside [0.75, 1.33]
+    An alert means the market behaves differently from the training regime: retrain
+    (scripts/11_train_production.sh) and treat probabilities with extra caution until then.
+    """
+
+    def __init__(self, mu0=0.03, k=0.015, h=4.0):
+        self.mu0, self.k, self.h = mu0, k, h
+        self.hist = {H: deque() for H in ("30", "60", "T")}
+        self.cusum = 0.0
+        self.calib = {}
+        self._win = None
+        self._acc = []
+
+    @staticmethod
+    def _ll(p, y):
+        p = min(max(p, 1e-6), 1 - 1e-6)
+        return -(y * np.log(p) + (1 - y) * np.log(1 - p))
+
+    def update(self, H, ts, p, pn, y):
+        x = self._ll(pn, y) - self._ll(p, y)
+        q = self.hist[H]
+        q.append((ts, x))
+        while q and q[0][0] < ts - 86400:
+            q.popleft()
+        if H == "T":
+            w = ts // 300
+            if self._win is not None and w != self._win and self._acc:
+                xm = float(np.mean(self._acc))
+                self.cusum = max(0.0, self.cusum + (self.mu0 - xm - self.k))
+                self._acc = []
+            self._win = w
+            self._acc.append(x)
+
+    def status(self):
+        sk = {H: (float(np.mean([v for _, v in q])) if len(q) >= 200 else None) for H, q in self.hist.items()}
+        slopes = [a for g in self.calib.values() for (a, b) in g.values()]
+        reasons = []
+        if self.cusum > self.h:
+            reasons.append("cusum_5m_skill")
+        if sk.get("T") is not None and sk["T"] < 0:
+            reasons.append("negative_24h_skill_5m")
+        if slopes and (min(slopes) < 0.75 or max(slopes) > 1.33):
+            reasons.append("calibration_slope")
+        return {"skill_24h_nats": sk, "cusum_5m": round(self.cusum, 3), "regime_alert": bool(reasons), "reasons": reasons}
 
 
 # ------------------------------------------------------------------------------------------

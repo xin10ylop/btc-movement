@@ -31,7 +31,7 @@ def feature_columns(df: pd.DataFrame) -> list[str]:
 
 
 def load(split: str, frac: float = 1.0, seed: int = 0, columns: list[str] | None = None,
-         feat_dir: Path = FEAT_DIR, splits: dict | None = None) -> pd.DataFrame:
+         feat_dir: Path = FEAT_DIR, splits: dict | None = None, regime: bool = True) -> pd.DataFrame:
     lo, hi = (ts_of(x) for x in (splits or SPLITS)[split])
     hi_eff = hi - EMBARGO_S
     parts = []
@@ -52,4 +52,10 @@ def load(split: str, frac: float = 1.0, seed: int = 0, columns: list[str] | None
             t = t[np.isin(w, uw[keep])]
         parts.append(t)
     df = pd.concat(parts, ignore_index=True)
+    if regime:
+        rp = feat_dir.parent / "regime.npz"
+        if rp.exists():
+            from . import regime as rg
+            for k, v in rg.lookup(rg.load(rp), df["ts"].to_numpy()).items():
+                df[k] = v
     return df

@@ -11,8 +11,12 @@ def load(p):
     return json.load(open(p)) if p.exists() else None
 
 
-main = load("models/report_test.json")
-val = load("models/report_val.json")
+import os
+MAIN = os.environ.get("MAIN", "models")
+main = load(f"{MAIN}/report_test.json")
+val = load(f"{MAIN}/report_val.json")
+v1 = load("models_v1/report_test.json") if MAIN != "models_v1" else None
+reg = {k: load(f"regime/regime_eval_{k}.json") for k in (f"{MAIN}_test", "wf_A_test", "wf_B_test")}
 wfs = {k: load(f"wf_{k}/report_test.json") for k in ("A", "B")}
 abl = {h: load(f"ablation/ablation_{h}.json") for h in ("30", "60", "T")}
 seq = {h: load(f"ablation/sequence_cnn_{h}.json") for h in ("30", "T")}
@@ -106,7 +110,7 @@ for m, d in main["horizons"]["T"].get("above_ref_monthly", {}).items():
 w("\n### Walk-forward (full retrain on an expanding window for each fold)\n")
 w("| fold | test period | horizon | naive RW | full | full+recal | Δ full vs naive | dir. AUC |")
 w("|---|---|---|---|---|---|---|---|")
-folds = [("A", wfs["A"]), ("B", wfs["B"]), ("val", val), ("main", main)]
+folds = [("A", wfs["A"]), ("B", wfs["B"]), ("val", val), ("main", main)] + ([("main (v1 recipe)", v1)] if v1 else [])
 for name, rep in folds:
     if not rep:
         continue
@@ -118,8 +122,47 @@ for name, rep in folds:
           f"{f(a['full+recal']['logloss'])} | {mn(a['dll_vs_naive_rw'])} | {f(rep['horizons'][H]['direction']['full']['auc'],3)} |")
 w("\n(`val` was used for early stopping, so it is slightly optimistic. It is shown for completeness.)\n")
 
+# ---------------------------------------------------------------- regimes
+w("## 6. Robustness across market regimes\n")
+w("Regime variables are causal (only previous days), and their thresholds are fixed on the training period. "
+  "Each cell is the 5-minute log-loss improvement over the naive random walk in millinats, with a 95% day-block "
+  "CI, plus AUC. The edge has to hold in **every** slice, not just on average.\n")
+for tag, title in ((f"{MAIN}_test", "main test (Jun–Nov 2026: bear low and rebound)"),
+                   ("wf_A_test", "walk-forward fold A (May–Aug 2025: bull run)"),
+                   ("wf_B_test", "walk-forward fold B (Nov 2025–Feb 2026: crash −43%)")):
+    R = reg.get(tag)
+    if not R:
+        continue
+    w(f"### {title}\n")
+    w("| regime family | slice | windows | Δ 5-min [95% CI] | 5-min AUC | Δ 1-min | Δ 30s | 30s direction AUC |")
+    w("|---|---|---|---|---|---|---|---|")
+    for fam, sl in R.items():
+        for name, r in sl.items():
+            t = r["T"]
+            w(f"| {fam} | {name} | {r['windows']:,} | {t['dll']*1e3:+.1f} [{t['ci'][0]*1e3:+.1f}, {t['ci'][1]*1e3:+.1f}] | {t['auc']:.3f} | "
+              f"{r['60']['dll']*1e3:+.1f} | {r['30']['dll']*1e3:+.1f} | {r['dir_auc_30']:.3f} |")
+    w("")
+rc = {h: load(f"ablation/regime_check_{h}.json") for h in ("30", "T")}
+rcv = {h: load(f"ablation/regime_check_{h}_volonly.json") for h in ("30", "T")}
+if rc["T"]:
+    w("### How regime handling was chosen (validation period only)\n")
+    w("| horizon | configuration | above-ref LL | Δ vs base (millinats) | vol QLIKE | drift IC |")
+    w("|---|---|---|---|---|---|")
+    for h in ("30", "T"):
+        if not rc[h]:
+            continue
+        b0 = rc[h]["base"]["above_ref_ll"]
+        rows = [(k, v) for k, v in rc[h].items()] + [(k + " (vol-engine only)", v) for k, v in (rcv[h] or {}).items()]
+        for k, v in rows:
+            w(f"| {HN[h]} | {k} | {v['above_ref_ll']:.5f} | {(v['above_ref_ll']-b0)*1e3:+.2f} | {v['vol_qlike']:.4f} | {v['ic']:.4f} |")
+    w("\nWhen regime variables are offered to the directional models they are used as *directional* signals: they "
+      "take 13% of the 5-minute drift gain and make validation worse. Two years contain too few distinct regimes to "
+      "learn regime-dependent drift. So regime state is allowed only to scale volatility and tails, the same rule as "
+      "for calendar features, and recent data is up-weighted with a 180-day half-life. That configuration is "
+      "the best on validation for both horizons and in every validation month.\n")
+
 # ---------------------------------------------------------------- ablations
-w("## 6. What drives the predictions (ablations on the validation period)\n")
+w("## 7. What drives the predictions (ablations on the validation period)\n")
 for H in ("30", "60", "T"):
     ab = abl.get(H)
     if not ab:
@@ -142,5 +185,7 @@ for H, s in seq.items():
         w(f"- **{HN[H]}**: the CNN alone has IC {s['ic_B_cnn']:.4f}; LightGBM drift alone {s['ic_B_lgbm_drift']:.4f}; "
           f"the blend (weight on the CNN {s['blend_w_cnn']:.1f}, chosen on held-out days) {s['ic_B_blend']:.4f}. "
           f"Correlation between the two forecasts: {s['corr_cnn_lgbm']:.2f}.")
-(ROOT / "REPORT_TABLES.md").write_text("\n".join(L) + "\n")
+header = (ROOT / "docs" / "report_header.md").read_text() if (ROOT / "docs" / "report_header.md").exists() else ""
+footer = (ROOT / "docs" / "report_footer.md").read_text() if (ROOT / "docs" / "report_footer.md").exists() else ""
+(ROOT / "REPORT.md").write_text(header + "\n".join(L) + "\n" + footer)
 print("\n".join(L))

@@ -117,6 +117,30 @@ Design principles:
 * **No calendar alpha.** Hour, weekday and minute-of-hour are allowed only in the volatility engine,
   never in directional models.
 
+## 3b. Regime robustness
+
+Bitcoin went through very different regimes in this data. There was a bull run to $124k (2025), a 43% crash to
+$63k (Nov 2025 – Feb 2026), a bear low at $58k and a rebound to $87k (2026). The model handles regime change at
+four levels:
+
+1. **Regime-invariant inputs by construction.** Every return, flow and basis feature is standardised by the
+   current volatility. A "2-sigma move" means the same thing in a calm and in a turbulent market, so the
+   directional relationships transfer across regimes.
+2. **Explicit, causal regime state for magnitude only.** `btcmove/regime.py` provides 7- and 30-day volatility,
+   vol-of-vol, vol expansion and regime age, trend and drawdown, volume and liquidity regime, and perp basis and
+   share, all computed from *previous days only*. These enter the volatility engine. They are deliberately
+   kept out of the directional models: offered there, they were used as directional signals and hurt validation
+   performance, because two years contain too few regimes to learn regime-dependent drift.
+3. **Adaptation.** Training rows are recency-weighted with a 180-day half-life, chosen on validation. A causal
+   recalibration is refitted daily on the last 14 days of resolved outcomes.
+4. **Detection.** The live engine scores its own resolved predictions against the naive baseline. It raises a
+   `regime_alert` (rolling 24h skill, a CUSUM on the 5-minute skill, calibration-slope bounds) that tells you
+   when to retrain (`scripts/11_train_production.sh`).
+
+Evaluation slices every test period by causal regime variables: volatility, trend, drawdown, vol expansion,
+intraday activity and weekday/weekend. It also includes walk-forward retrains whose test periods are a bull
+run, a crash and a bear-market rebound (see REPORT.md §5–6).
+
 ## 4. Usage
 
 ```bash
@@ -172,8 +196,10 @@ btcmove/
   model.py                per-horizon stack (vol, drift, shape, prior-boosted heads)
   engine.py               horizons working together + JSON outputs
   recal.py                causal trailing recalibration
+  regime.py               causal multi-day regime state (daily aggregates -> rg_* features)
   live.py                 rolling-buffer real-time predictor + Binance connector + replay
   metrics.py              scoring rules, calibration, day-block bootstrap
-scripts/                  01 download → 02 features → 03 train → 04 evaluate → 05 ablations
+scripts/                  01 download → 02 features → 03 train → 04 evaluate → 05/06/13 experiments →
+                          07 walk-forward → 08 report → 09 replay → 10 recal → 11 production → 12 audit → 14 regimes
 tests/                    look-ahead, structural-vs-Monte-Carlo, streaming-vs-batch
 ```

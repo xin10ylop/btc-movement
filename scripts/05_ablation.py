@@ -30,7 +30,7 @@ out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
 
 tr = data.load("train", frac=a.frac, seed=3)
 va = data.load("val", frac=0.5, seed=4)
-allf = data.feature_columns(tr)
+allf = [f for f in data.feature_columns(tr) if not f.startswith("rg_")]  # same feature universe as the 30s/60s runs
 FUT = [f for f in allf if f.startswith(("basis", "zfret", "fofi", "fsflow", "lfvshare", "lfrv", "fut_ok"))]
 FLOW = [f for f in allf if f.startswith(("ofi", "sflow", "ewflow", "llam", "resid", "fofi", "fsflow"))]
 WIN = ["run_hi", "run_lo", "hi_gap", "lo_gap", "frac_above", "n_cross", "t_since_cross", "t_since_hi", "t_since_lo",
