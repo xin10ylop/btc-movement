@@ -17,19 +17,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from btcmove import data, metrics as M, structural as st  # noqa: E402
 from btcmove.model import FP_DELTAS, hlen  # noqa: E402
 from btcmove.engine import Engine  # noqa: E402
+from btcmove.recal import trailing_recalibrate  # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--split", default="test")
 ap.add_argument("--models", default="artifacts/models")
 ap.add_argument("--horizons", default="T,30,60")
 ap.add_argument("--smoke", action="store_true")
+ap.add_argument("--dates", default="", help="walk-forward: train_start,val_start,test_start,test_end (YYYY-MM-DD)")
 ap.add_argument("--qsub", type=int, default=60000, help="rows used for quantile/CRPS evaluation")
 ap.add_argument("--boot", type=int, default=500)
+ap.add_argument("--no-recal", action="store_true")
 a = ap.parse_args()
 
 splits = data.SPLITS
 if a.smoke:
     splits = {"train": ("2024-02-01", "2024-08-01"), "val": ("2024-08-01", "2024-09-01"), "test": ("2024-09-01", "2024-11-01")}
+if a.dates:
+    d0, d1, d2, d3 = a.dates.split(",")
+    splits = {"train": (d0, d1), "val": (d1, d2), "test": (d2, d3)}
 mdir = Path(a.models)
 t0 = time.time()
 df = data.load(a.split, splits=splits)
@@ -54,7 +60,31 @@ def naive_sd(df, H):
 
 
 eng = Engine.load(mdir)
+n_main = len(df)
+if not a.no_recal:
+    # 15 days preceding the split, used ONLY as history for the causal trailing recalibration
+    lo_ts = data.ts_of(splits[a.split][0])
+    import datetime as _dt
+    wlo = (_dt.datetime.fromtimestamp(lo_ts - 15 * 86400, _dt.UTC)).strftime("%Y-%m-%d")
+    wdf = data.load("warm", splits={"warm": (wlo, splits[a.split][0])})
+    wdf = wdf[wdf.ts < lo_ts - 3600]
+    import pandas as _pd
+    df = _pd.concat([wdf, df], ignore_index=True)
+    n_warm = len(wdf)
+else:
+    n_warm = 0
 df, S_all = eng.augment(df)
+WARM = np.zeros(len(df), bool); WARM[:n_warm] = True
+RECAL = {}
+for H in a.horizons.split(","):
+    if H in eng.models and n_warm:
+        hm = eng.models[H]
+        y_ = hm._d1_target(df)
+        p_, _ = hm.predict_above(df, S_all[H])
+        eb_ = np.digitize(df["e"].to_numpy(), [1, 60, 120, 180, 240])
+        RECAL[H] = trailing_recalibrate(df["ts"].to_numpy(), p_, y_, groups=eb_, min_rows=5000)[~WARM]
+df = df[~WARM].reset_index(drop=True)
+S_all = {H: {k: v[~WARM] for k, v in s_.items()} for H, s_ in S_all.items()}
 for H in a.horizons.split(","):
     if H not in eng.models:
         continue
@@ -72,10 +102,12 @@ for H in a.horizons.split(","):
     # ---------------- 1. above the fixed reference price ----------------
     y = hm._d1_target(df)
     p_full, p_struct = hm.predict_above(df, s)
+    p_recal = RECAL.get(H, p_full)
     p_naive = special.ndtr(-(qK) / sd_n)
     p_volonly = special.ndtr(-(qK) / s["sd"])
     p_clim = np.full(len(y), y.mean())  # NB: uses test base rate (generous to the baseline)
-    models_ = {"climatology": p_clim, "naive_rw": p_naive, "vol_only": p_volonly, "structural": p_struct, "full": p_full}
+    models_ = {"climatology": p_clim, "naive_rw": p_naive, "vol_only": p_volonly, "structural": p_struct, "full": p_full,
+               "full+recal": p_recal}
     if H != "T":
         within = (e + h) <= 300
     else:
@@ -89,6 +121,9 @@ for H in a.horizons.split(","):
     md.append("| model | log loss | Brier | AUC | ECE | accuracy |\n|---|---|---|---|---|---|")
     for n, r in rows:
         md.append(f"| {n} | {fmt(r['logloss'])} | {fmt(r['brier'])} | {fmt(r['auc'])} | {fmt(r['ece'])} | {fmt(r['acc'],3)} |")
+    mean, lo, hi, pb = M.block_bootstrap_diff(M.ll_vec(y[within], p_full[within]), M.ll_vec(y[within], p_recal[within]), day[within], a.boot)
+    rep["above_ref"]["dll_recal_vs_full"] = {"mean": mean, "ci95": [lo, hi], "p_boot_gt0": pb}
+    md.append(f"\nlog-loss change from causal trailing recalibration (full -> full+recal): {mean*1e3:.3f} millinats, 95% CI [{lo*1e3:.3f}, {hi*1e3:.3f}]")
     for base in ("naive_rw", "structural"):
         mean, lo, hi, pb = M.block_bootstrap_diff(M.ll_vec(y[within], models_[base][within]), M.ll_vec(y[within], p_full[within]), day[within], a.boot)
         rep["above_ref"][f"dll_vs_{base}"] = {"mean": mean, "ci95": [lo, hi], "p_boot_gt0": pb}

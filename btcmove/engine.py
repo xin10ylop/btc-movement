@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from .model import FP_DELTAS, HorizonModel, hlen
+from .recal import Recalibrator
 
 STACK_FROM = ("30", "60")
 LEVELS_BPS = (-30, -20, -10, -5, 5, 10, 20, 30)
@@ -25,8 +26,9 @@ def stack_columns(df: pd.DataFrame, s: dict, H: str) -> dict:
 
 
 class Engine:
-    def __init__(self, models: dict[str, HorizonModel]):
+    def __init__(self, models: dict[str, HorizonModel], recal: Recalibrator | None = None):
         self.models = models
+        self.recal = recal
 
     @classmethod
     def load(cls, mdir: str | Path) -> "Engine":
@@ -38,7 +40,11 @@ class Engine:
                 with open(p, "rb") as f:
                     ms[H] = pickle.load(f)
                     ms[H].log = None
-        return cls(ms)
+        rc = None
+        if (mdir / "recal.json").exists():
+            import json
+            rc = Recalibrator.from_json(json.load(open(mdir / "recal.json")))
+        return cls(ms, rc)
 
     def augment(self, df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
         """Add stacking inputs; returns (df, structural outputs per horizon)."""
@@ -68,24 +74,35 @@ class Engine:
                     displacement_bps=float((S[i] / K[i] - 1) * 1e4), horizons={}) for i in range(n)]
         for H, hm in self.models.items():
             s = S_[H]
-            p_above, _ = hm.predict_above(df, s)
+            p_raw, _ = hm.predict_above(df, s)
+            p_above = self.recal.apply(H, df["e"].to_numpy(), p_raw) if self.recal is not None else p_raw
             p_up, _ = hm.predict_cdf(df, np.full(n, 1e-12), s=s)
-            lv = {}
-            for d in levels_bps:
-                q = qK + d * 1e-4
-                p_end, _ = hm.predict_cdf(df, q, s=s)
-                side = (q > 0).astype(int)
-                dist = np.abs(q)
-                p_t, _ = hm.predict_touch(df, np.maximum(dist, 1e-9), side, s=s)
-                p_t = np.where(dist <= 1e-9, 1.0, p_t)
-                lv[d] = (p_end, p_t, q)
-            fp = {d: hm.predict_first(df, d, s=s)[0] for d in fp_bps}
+            # all levels / first-passage sizes in one batched call each
+            Lv = np.asarray(levels_bps, float)
+            ri = np.repeat(np.arange(n), len(Lv))
+            dfr = df.iloc[ri]
+            sr = {k: v[ri] for k, v in s.items()}
+            q = (qK[:, None] + Lv[None, :] * 1e-4).ravel()
+            p_end = hm.predict_cdf(dfr, q, s=sr)[0]
+            side = (q > 0).astype(int)
+            dist = np.abs(q)
+            p_t = hm.predict_touch(dfr, np.maximum(dist, 1e-9), side, s=sr)[0]
+            p_t = np.where(dist <= 1e-9, 1.0, p_t)
+            # logical coherence: finishing beyond a level implies having touched it
+            p_t = np.maximum(p_t, np.where(side == 1, p_end, 1 - p_end))
+            p_end = p_end.reshape(n, len(Lv)); p_t = p_t.reshape(n, len(Lv))
+            lv = {d: (p_end[:, j], p_t[:, j]) for j, d in enumerate(levels_bps)}
+            Fd = np.asarray(fp_bps, float)
+            rf = np.repeat(np.arange(n), len(Fd))
+            Pf = hm.predict_first(df.iloc[rf], np.tile(Fd, n), s={k: v[rf] for k, v in s.items()})[0].reshape(n, len(Fd), 3)
+            fp = {d: Pf[:, j] for j, d in enumerate(fp_bps)}
             Q = hm.quantiles(df, QPROBS, s=s) if quantiles else None
             h = hlen(df, H)
             for i in range(n):
                 o = {
                     "horizon_s": float(h[i]),
                     "p_above_reference": float(p_above[i]),
+                    "p_above_reference_raw": float(p_raw[i]),
                     "p_below_reference": float(1 - p_above[i]),
                     "p_up_from_now": float(p_up[i]),
                     "expected_move_bps": float(s["mu"][i] * 1e4),

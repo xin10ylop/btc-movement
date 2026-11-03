@@ -78,6 +78,13 @@ def _blocks(ts: np.ndarray, k: int, gap: int = 3600):
     return out
 
 
+def _pred(b, X, **kw):
+    """LightGBM predict; single-threaded for tiny batches (live inference) to avoid thread overhead."""
+    if len(X) < 2000:
+        kw["num_threads"] = 1
+    return b.predict(X, num_iteration=b.best_iteration or None, **kw)
+
+
 def tau_bucket(tau):
     return np.clip(np.searchsorted(TAU_BUCKETS, tau, side="left") - 1, 0, len(TAU_BUCKETS) - 2)
 
@@ -299,14 +306,13 @@ class HorizonModel:
     # ------------------------------------------------------------------ inference
     def predict_struct(self, df):
         X = _X(df, self.feats)
-        sd = np.sqrt(self._var_from(df, self.models["vol"].predict(X, num_iteration=self.models["vol"].best_iteration or None)))
+        sd = np.sqrt(self._var_from(df, _pred(self.models["vol"], X)))
         Xd = _X(df, self.dir_feats)
-        m = self.models["drift"].predict(Xd, num_iteration=self.models["drift"].best_iteration or None)
+        m = _pred(self.models["drift"], Xd)
         return self.structural(df, sd, m)
 
     def _raw(self, key, X):
-        b = self.models[key]
-        return b.predict(X, raw_score=True, num_iteration=b.best_iteration or None)
+        return _pred(self.models[key], X, raw_score=True)
 
     def predict_above(self, df, s=None):
         s = s if s is not None else self.predict_struct(df)
@@ -336,20 +342,27 @@ class HorizonModel:
         E = np.exp(z)
         return E / E.sum(1, keepdims=True), P
 
-    def quantiles(self, df, probs=(0.05, 0.25, 0.5, 0.75, 0.95), s=None, grid=np.linspace(-4, 4, 81)):
-        """Quantiles of R_h by inverting the monotone D2 CDF on a grid (falls back to structural)."""
+    def quantiles(self, df, probs=(0.05, 0.25, 0.5, 0.75, 0.95), s=None, grid=np.linspace(-4, 4, 81), chunk=4000):
+        """Quantiles of R_h by inverting the monotone D2 CDF on a grid (one batched model call per chunk)."""
         s = s if s is not None else self.predict_struct(df)
-        n = len(df)
-        sf = np.empty((n, len(grid)))
-        for j, g in enumerate(grid):
-            sf[:, j], _ = self.predict_cdf(df, s["mu"] + g * s["sd"], s=s)
+        n, G = len(df), len(grid)
+        sf = np.empty((n, G))
+        for a in range(0, n, chunk):
+            b = min(n, a + chunk)
+            sub = df.iloc[a:b]
+            m = b - a
+            rep = sub.iloc[np.repeat(np.arange(m), G)]
+            srep = {k: np.repeat(v[a:b], G) for k, v in s.items()}
+            g = np.tile(grid, m)
+            X, p, _, _ = self._d2_inputs(rep, srep, g)
+            sf[a:b] = st.sigmoid(st.logit(p) + self._raw("d2", X)).reshape(m, G)
         cdf = 1 - sf
         cdf = np.maximum.accumulate(cdf, axis=1)
         out = np.empty((n, len(probs)))
         for k, pr in enumerate(probs):
-            j = np.clip((cdf < pr).sum(1), 1, len(grid) - 1)
+            j = np.clip((cdf < pr).sum(1), 1, G - 1)
             c0 = cdf[np.arange(n), j - 1]; c1 = cdf[np.arange(n), j]
             w = np.clip((pr - c0) / np.maximum(c1 - c0, 1e-9), 0, 1)
-            g = grid[j - 1] + w * (grid[j] - grid[j - 1])
-            out[:, k] = s["mu"] + g * s["sd"]
+            gq = grid[j - 1] + w * (grid[j] - grid[j - 1])
+            out[:, k] = s["mu"] + gq * s["sd"]
         return out

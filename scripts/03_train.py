@@ -20,6 +20,7 @@ ap.add_argument("--horizons", default="30,60,T")
 ap.add_argument("--no-stack", action="store_true", help="do not feed 30s/60s forecasts into the 5-minute model")
 ap.add_argument("--heads", default="d1,d2,d3,d4")
 ap.add_argument("--smoke", action="store_true")
+ap.add_argument("--dates", default="", help="walk-forward: train_start,val_start,test_start,test_end (YYYY-MM-DD)")
 ap.add_argument("--out", default="artifacts/models")
 ap.add_argument("--drop", default="", help="comma-separated feature prefixes to drop (ablation)")
 a = ap.parse_args()
@@ -27,6 +28,9 @@ a = ap.parse_args()
 splits = data.SPLITS
 if a.smoke:
     splits = {"train": ("2024-02-01", "2024-08-01"), "val": ("2024-08-01", "2024-09-01"), "test": ("2024-09-01", "2024-11-01")}
+if a.dates:
+    d0, d1, d2, d3 = a.dates.split(",")
+    splits = {"train": (d0, d1), "val": (d1, d2), "test": (d2, d3)}
 
 out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
 logf = open(out / "train.log", "a")

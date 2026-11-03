@@ -1,0 +1,61 @@
+11:40:16 train 2,369,755 rows  val 809,850 rows  122 features  splits={'train': ('2024-02-01', '2026-03-01'), 'val': ('2026-03-01', '2026-06-01'), 'test': ('2026-06-01', '2026-11-03')}  (22s)
+11:40:19 [30] stage A vol
+11:41:12     fit gamma n=2369755 iters=175 (53s)
+11:41:44     fit gamma n=1579822 iters=175 (29s)
+11:42:15     fit gamma n=1579574 iters=175 (26s)
+11:42:46     fit gamma n=1579744 iters=175 (26s)
+11:42:51 [30] stage B drift
+11:43:59     fit regression n=2369755 iters=255 (61s)
+11:44:35     fit regression n=1579822 iters=255 (33s)
+11:45:28     fit regression n=1579574 iters=255 (47s)
+11:46:05     fit regression n=1579744 iters=255 (32s)
+11:46:18 [30] stage C shape: b0: nu=4 s=1.150
+11:46:18 [30] D1 above-reference head
+11:47:50     fit binary n=2369755 iters=308 (79s)
+11:47:50 [30] D2 conditional-CDF head
+11:49:10     fit binary n=2369755 iters=225 (65s)
+11:49:10 [30] D3 touch head
+11:51:16     fit binary n=2369755 iters=482 (112s)
+11:51:16 [30] D4 first-passage head
+11:55:48     fit multiclass n=2369662 iters=215 (150s)
+11:55:49 [30] saved (955s)
+11:55:50 [60] stage A vol
+11:56:40     fit gamma n=2369755 iters=137 (51s)
+11:57:09     fit gamma n=1579822 iters=137 (23s)
+11:57:35     fit gamma n=1579574 iters=137 (23s)
+11:58:03     fit gamma n=1579744 iters=137 (23s)
+11:58:06 [60] stage B drift
+11:59:01     fit regression n=2369755 iters=147 (43s)
+11:59:26     fit regression n=1579822 iters=147 (20s)
+11:59:50     fit regression n=1579574 iters=147 (21s)
+12:00:14     fit regression n=1579744 iters=147 (20s)
+12:00:24 [60] stage C shape: b0: nu=5 s=1.150
+12:00:24 [60] D1 above-reference head
+12:01:25     fit binary n=2369755 iters=137 (46s)
+12:01:25 [60] D2 conditional-CDF head
+12:02:22     fit binary n=2369755 iters=99 (40s)
+12:02:22 [60] D3 touch head
+12:04:01     fit binary n=2369755 iters=324 (84s)
+12:04:01 [60] D4 first-passage head
+12:09:20     fit multiclass n=2369658 iters=245 (166s)
+12:09:20 [60] saved (1767s)
+12:09:22 [T] stage A vol
+12:09:51     fit gamma n=2369755 iters=28 (29s)
+12:10:04     fit gamma n=1579822 iters=28 (9s)
+12:10:13     fit gamma n=1579574 iters=28 (8s)
+12:10:23     fit gamma n=1579744 iters=28 (9s)
+12:10:24 [T] stage B drift
+12:11:05     fit regression n=2369755 iters=88 (32s)
+12:11:24     fit regression n=1579822 iters=88 (15s)
+12:11:39     fit regression n=1579574 iters=88 (14s)
+12:11:55     fit regression n=1579744 iters=88 (14s)
+12:12:28 [T] stage C shape: b0: nu=2.5 s=0.875, b1: nu=2.5 s=1.375, b2: nu=4 s=1.150, b3: nu=5 s=1.150, b4: nu=5 s=1.175, b5: nu=5 s=1.200
+12:12:28 [T] D1 above-reference head
+12:14:20     fit binary n=2369755 iters=374 (97s)
+12:14:20 [T] D2 conditional-CDF head
+12:15:23     fit binary n=2369755 iters=133 (47s)
+12:15:23 [T] D3 touch head
+12:17:24     fit binary n=2369755 iters=418 (106s)
+12:17:24 [T] D4 first-passage head
+12:24:34     fit multiclass n=2369662 iters=279 (206s)
+12:24:34 [T] saved (2680s)

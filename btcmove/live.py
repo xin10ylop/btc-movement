@@ -88,11 +88,18 @@ class RollingBuffer:
 
 
 class LivePredictor:
-    def __init__(self, engine: Engine, seasonal: dict | None, quantiles: bool = True):
+    def __init__(self, engine: Engine, seasonal: dict | None, quantiles: bool = True, log_every: int = 5,
+                 adapt: bool = True):
         self.engine = engine
         self.seasonal = seasonal
         self.buf = RollingBuffer()
         self.quantiles = quantiles
+        # self-monitoring for the causal daily recalibration
+        self.log_every = log_every
+        self.adapt = adapt
+        self.pending = deque()          # (resolve_ts, H, ts, e, p_raw, K)
+        self.resolved = {H: [] for H in ("30", "60", "T")}
+        self._day = None
 
     @classmethod
     def from_artifacts(cls, mdir="artifacts/models", seasonal_path="data/seasonal.npz", **kw):
@@ -134,10 +141,47 @@ class LivePredictor:
 
     def push(self, ts: int, spot: dict, fut: dict | None):
         self.buf.push(ts, spot, fut)
+        self._resolve()
+        day = ts // 86400
+        if self.adapt and self._day is not None and day != self._day:
+            self.refit_recal(now_ts=day * 86400)
+        self._day = day
+
+    def _close_at(self, t):
+        j = self.buf.n - 1 - (self.buf.ts_last - t)
+        return float(self.buf.a["c"][j]) if 0 <= j < self.buf.n else np.nan
+
+    def _resolve(self):
+        while self.pending and self.pending[0][0] <= self.buf.ts_last:
+            rt, H, ts, e, p, K = self.pending.popleft()
+            c = self._close_at(rt)
+            if np.isfinite(c):
+                self.resolved[H].append((ts, e, p, float(c >= K)))
+        horizon = 14 * 86400
+        for H, L in self.resolved.items():
+            if len(L) > 1.2 * horizon / self.log_every:
+                del L[: len(L) - int(horizon / self.log_every)]
+
+    def refit_recal(self, now_ts):
+        from .recal import Recalibrator
+        if self.engine.recal is None:
+            self.engine.recal = Recalibrator()
+        for H, L in self.resolved.items():
+            if len(L) >= 5000:
+                a = np.array(L)
+                self.engine.recal.fit(H, a[:, 0], a[:, 1], a[:, 2], a[:, 3], now_ts)
 
     def predict(self, k_open: float | None = None) -> dict:
         row = self.features_now(k_open)
-        return self.engine.predict(row, quantiles=self.quantiles)[0]
+        out = self.engine.predict(row, quantiles=self.quantiles)[0]
+        ts = out["ts"]
+        if ts % self.log_every == 0 or out["elapsed_s"] == 0:
+            for H, name in (("30", "30s"), ("60", "60s"), ("T", "close")):
+                if name in out["horizons"]:
+                    rt = ts + 29 if H == "30" else ts + 59 if H == "60" else out["window_start"] + 299
+                    self.pending.append((rt, H, ts, out["elapsed_s"], out["horizons"][name]["p_above_reference_raw"], out["reference_price"]))
+            self.pending = deque(sorted(self.pending))
+        return out
 
     def on_second(self, ts: int, spot: dict, fut: dict | None, k_open: float | None = None) -> dict:
         self.push(ts, spot, fut)
