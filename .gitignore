@@ -1,0 +1,9 @@
+data/
+__pycache__/
+*.pyc
+*.zip
+artifacts/cache/
+artifacts/samples/
+.ipynb_checkpoints/
+artifacts/smoke/
+artifacts/*.out

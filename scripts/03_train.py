@@ -1,0 +1,68 @@
+"""Train the full stack for each horizon and save to artifacts/.
+
+usage: python scripts/03_train.py [--frac 0.35] [--horizons T,30,60] [--smoke]
+"""
+import argparse
+import pickle
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from btcmove import data, model  # noqa: E402
+from btcmove.engine import STACK_FROM, stack_columns  # noqa: E402
+
+ap = argparse.ArgumentParser()
+ap.add_argument("--frac", type=float, default=0.35)
+ap.add_argument("--horizons", default="30,60,T")
+ap.add_argument("--no-stack", action="store_true", help="do not feed 30s/60s forecasts into the 5-minute model")
+ap.add_argument("--heads", default="d1,d2,d3,d4")
+ap.add_argument("--smoke", action="store_true")
+ap.add_argument("--out", default="artifacts/models")
+ap.add_argument("--drop", default="", help="comma-separated feature prefixes to drop (ablation)")
+a = ap.parse_args()
+
+splits = data.SPLITS
+if a.smoke:
+    splits = {"train": ("2024-02-01", "2024-08-01"), "val": ("2024-08-01", "2024-09-01"), "test": ("2024-09-01", "2024-11-01")}
+
+out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
+logf = open(out / "train.log", "a")
+
+
+def log(msg):
+    line = f"{time.strftime('%H:%M:%S')} {msg}"
+    print(line, flush=True)
+    logf.write(line + "\n"); logf.flush()
+
+
+t0 = time.time()
+tr = data.load("train", frac=a.frac, seed=1, splits=splits)
+va = data.load("val", frac=1.0, splits=splits)
+feats = data.feature_columns(tr)
+drops = [d for d in a.drop.split(",") if d]
+feats = [f for f in feats if not any(f.startswith(d) for d in drops)]
+log(f"train {len(tr):,} rows  val {len(va):,} rows  {len(feats)} features  splits={splits}  ({time.time()-t0:.0f}s)")
+
+stacked = []
+for H in a.horizons.split(","):
+    hfeats = feats + (stacked if H == "T" else [])
+    hm = model.HorizonModel(H, hfeats, log=log)
+    (sd_tr, m_tr), (sd_va, m_va) = hm.fit_ab(tr, va)
+    hm.fit_shape(tr, sd_tr, m_tr)
+    s_tr = hm.structural(tr, sd_tr, m_tr)
+    s_va = hm.structural(va, sd_va, m_va)
+    if H in STACK_FROM and not a.no_stack:
+        # out-of-fold short-horizon forecasts become inputs of the 5-minute model
+        for k, v in stack_columns(tr, s_tr, H).items():
+            tr[k] = v
+            stacked.append(k)
+        for k, v in stack_columns(va, s_va, H).items():
+            va[k] = v
+    hm.fit_heads(tr, s_tr, va, s_va, heads=tuple(a.heads.split(",")))
+    hm.log = None
+    with open(out / f"horizon_{H}.pkl", "wb") as f:
+        pickle.dump(hm, f)
+    log(f"[{H}] saved ({time.time()-t0:.0f}s)")
